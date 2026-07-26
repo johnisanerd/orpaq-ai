@@ -4,10 +4,19 @@ from typing import Optional
 class LeadScoringService:
     def __init__(self):
         self.score_weights = {
-            "no_website": 100,
-            "low_pagespeed": 30,
-            "low_ai_score": 40,
-            "not_mobile_friendly": 30,
+            # No website = highest opportunity
+            "no_website": 95,
+            # Poor website = high opportunity for redesign
+            "very_slow_pagespeed": 25,
+            "slow_pagespeed": 15,
+            "low_ai_score": 20,
+            "medium_ai_score": 10,
+            "not_mobile_friendly": 20,
+            "outdated_design": 15,
+            # Low rating = needs marketing help
+            "low_rating": 10,
+            # High rating but bad site = missed opportunity
+            "high_rating_no_site": 15,
         }
 
     def calculate_score(
@@ -16,6 +25,8 @@ class LeadScoringService:
         pagespeed_score: Optional[int] = None,
         ai_ui_score: Optional[float] = None,
         mobile_friendly: Optional[bool] = None,
+        rating: Optional[float] = None,
+        outdated: Optional[bool] = None,
     ) -> dict:
         score = 0
         factors = []
@@ -26,37 +37,92 @@ class LeadScoringService:
                 {
                     "factor": "no_website",
                     "points": self.score_weights["no_website"],
-                    "reason": "No website - highest priority",
+                    "reason": "No website - highest opportunity for new business",
                 }
             )
+            # Bonus if business has good rating but no website
+            if rating and rating >= 4.5:
+                score += self.score_weights["high_rating_no_site"]
+                factors.append(
+                    {
+                        "factor": "high_rating_no_site",
+                        "points": self.score_weights["high_rating_no_site"],
+                        "reason": f"High rating ({rating}) but no website - proven quality, huge missed opportunity",
+                    }
+                )
+        else:
+            # Pagespeed scoring
+            if pagespeed_score is not None:
+                if pagespeed_score < 30:
+                    score += self.score_weights["very_slow_pagespeed"]
+                    factors.append(
+                        {
+                            "factor": "very_slow_pagespeed",
+                            "points": self.score_weights["very_slow_pagespeed"],
+                            "reason": f"Very slow PageSpeed: {pagespeed_score}/100 - losing customers",
+                        }
+                    )
+                elif pagespeed_score < 50:
+                    score += self.score_weights["slow_pagespeed"]
+                    factors.append(
+                        {
+                            "factor": "slow_pagespeed",
+                            "points": self.score_weights["slow_pagespeed"],
+                            "reason": f"Slow PageSpeed: {pagespeed_score}/100 - needs optimization",
+                        }
+                    )
 
-        if pagespeed_score is not None and pagespeed_score < 50:
-            score += self.score_weights["low_pagespeed"]
+            # UI score scoring
+            if ai_ui_score is not None:
+                if ai_ui_score < 4:
+                    score += self.score_weights["low_ai_score"]
+                    factors.append(
+                        {
+                            "factor": "low_ai_score",
+                            "points": self.score_weights["low_ai_score"],
+                            "reason": f"Poor UI/UX score: {ai_ui_score:.1f}/10 - needs redesign",
+                        }
+                    )
+                elif ai_ui_score < 6:
+                    score += self.score_weights["medium_ai_score"]
+                    factors.append(
+                        {
+                            "factor": "medium_ai_score",
+                            "points": self.score_weights["medium_ai_score"],
+                            "reason": f"Average UI/UX score: {ai_ui_score:.1f}/10 - room for improvement",
+                        }
+                    )
+
+            # Mobile friendly
+            if mobile_friendly is not None and not mobile_friendly:
+                score += self.score_weights["not_mobile_friendly"]
+                factors.append(
+                    {
+                        "factor": "not_mobile_friendly",
+                        "points": self.score_weights["not_mobile_friendly"],
+                        "reason": "Not mobile-friendly - losing 60% of mobile traffic",
+                    }
+                )
+
+            # Outdated design
+            if outdated:
+                score += self.score_weights["outdated_design"]
+                factors.append(
+                    {
+                        "factor": "outdated_design",
+                        "points": self.score_weights["outdated_design"],
+                        "reason": "Outdated design - customers prefer modern competitors",
+                    }
+                )
+
+        # Low rating bonus (business needs marketing help)
+        if rating and rating < 3.5:
+            score += self.score_weights["low_rating"]
             factors.append(
                 {
-                    "factor": "low_pagespeed",
-                    "points": self.score_weights["low_pagespeed"],
-                    "reason": f"Poor PageSpeed score: {pagespeed_score}",
-                }
-            )
-
-        if ai_ui_score is not None and ai_ui_score < 5:
-            score += self.score_weights["low_ai_score"]
-            factors.append(
-                {
-                    "factor": "low_ai_score",
-                    "points": self.score_weights["low_ai_score"],
-                    "reason": f"Poor UI score: {ai_ui_score}/10",
-                }
-            )
-
-        if mobile_friendly is not None and not mobile_friendly:
-            score += self.score_weights["not_mobile_friendly"]
-            factors.append(
-                {
-                    "factor": "not_mobile_friendly",
-                    "points": self.score_weights["not_mobile_friendly"],
-                    "reason": "Not mobile-friendly",
+                    "factor": "low_rating",
+                    "points": self.score_weights["low_rating"],
+                    "reason": f"Low rating ({rating}) - reputation management needed",
                 }
             )
 

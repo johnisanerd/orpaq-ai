@@ -43,7 +43,9 @@ export interface Lead {
   outreach_message?: string;
   redesign_suggestions?: string;
   business?: Business;
+  businesses?: Business;
   analysis?: Analysis;
+  analyses?: Analysis;
 }
 
 export interface LeadFilters {

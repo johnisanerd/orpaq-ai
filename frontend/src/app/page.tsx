@@ -1,16 +1,21 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { 
   Download, RefreshCw, Play, Loader2, Search, Filter, 
   ChevronDown, ChevronUp, Trash2, Mail, ExternalLink,
   Target, Zap, TrendingUp, Users, Sparkles, ArrowRight,
-  LayoutGrid, List, MapPin, Building2, Phone, Globe
+  LayoutGrid, List, MapPin, Building2, Phone, Globe, LogOut, SearchIcon,
+  ChevronRight, Copy, Check
 } from 'lucide-react';
 import { leadsApi, Lead, LeadFilters } from '@/lib/api';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
+import { useAuth } from '@/lib/auth';
 
 export default function Dashboard() {
+  const { user, signOut } = useAuth();
+  const router = useRouter();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [stats, setStats] = useState({ total: 0, hot: 0, medium: 0, low: 0 });
   const [loading, setLoading] = useState(true);
@@ -19,6 +24,12 @@ export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [showFilters, setShowFilters] = useState(false);
+
+  useEffect(() => {
+    if (user === null) {
+      router.push('/login');
+    }
+  }, [user, router]);
   
   // Filter states
   const [search, setSearch] = useState('');
@@ -34,10 +45,46 @@ export default function Dashboard() {
   const [pipelineCategory, setPipelineCategory] = useState('restaurants');
   const [pipelineLimit, setPipelineLimit] = useState('10');
   const [pipelineResult, setPipelineResult] = useState<any>(null);
+  
+  // Lead suggestions from API
+  const [pipelineSuggestions, setPipelineSuggestions] = useState<any[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+
+  // Fetch suggestions from API
+  const fetchSuggestions = useCallback(async (loc?: string) => {
+    setSuggestionsLoading(true);
+    try {
+      const params = loc ? `?location=${encodeURIComponent(loc)}&limit=12` : '?limit=12';
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'}/suggestions${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPipelineSuggestions(data);
+      }
+    } catch {
+      // API offline — will stay empty
+    } finally {
+      setSuggestionsLoading(false);
+    }
+  }, []);
+
+  // Load suggestions on mount
+  useEffect(() => {
+    fetchSuggestions();
+  }, [fetchSuggestions]);
+
+  // Filter suggestions as user types location
+  const handleLocationChange = (val: string) => {
+    setPipelineLocation(val);
+    fetchSuggestions(val || undefined);
+  };
 
   // Sort
   const [sortField, setSortField] = useState<string>('lead_score');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  
+  // Expanded cards
+  const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -153,12 +200,22 @@ export default function Dashboard() {
     }
   };
 
+  const handleCopyOutreach = async (message: string, leadId: string) => {
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopiedId(leadId);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (error) {
+      console.error('Copy failed:', error);
+    }
+  };
+
   const sortedLeads = [...leads].sort((a, b) => {
     let aVal: any = a[sortField as keyof Lead];
     let bVal: any = b[sortField as keyof Lead];
     if (sortField === 'business') {
-      aVal = a.business?.name || '';
-      bVal = b.business?.name || '';
+      aVal = a.businesses?.name || a.business?.name || '';
+      bVal = b.businesses?.name || b.business?.name || '';
     }
     if (typeof aVal === 'string') {
       return sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
@@ -174,6 +231,10 @@ export default function Dashboard() {
     { label: 'Medium Leads', value: stats.medium, icon: TrendingUp, color: 'from-yellow-500 to-amber-500', bg: 'rgba(234, 179, 8, 0.1)' },
     { label: 'Low Priority', value: stats.low, icon: Users, color: 'from-slate-500 to-gray-500', bg: 'rgba(100, 116, 139, 0.1)' },
   ];
+
+  const googleMapsUrl = (name: string, location: string) => {
+    return `https://www.google.com/maps/search/${encodeURIComponent(`${name} ${location}`)}`;
+  };
 
   return (
     <div className="min-h-screen bg-mesh">
@@ -194,6 +255,13 @@ export default function Dashboard() {
             </div>
             
             <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-400">{user?.email}</span>
+              <button
+                onClick={() => signOut()}
+                className="p-2.5 rounded-xl glass hover:border-red-500 transition-all"
+              >
+                <LogOut className="w-4 h-4 text-gray-400" />
+              </button>
               <ThemeToggle />
               <button
                 onClick={() => loadData()}
@@ -253,9 +321,9 @@ export default function Dashboard() {
               <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input
                 type="text"
-                placeholder="Location (e.g., New York)"
+                placeholder="Location (e.g., Kochi)"
                 value={pipelineLocation}
-                onChange={(e) => setPipelineLocation(e.target.value)}
+                onChange={(e) => handleLocationChange(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-primary)] transition-all"
               />
             </div>
@@ -269,6 +337,12 @@ export default function Dashboard() {
               <option value="agencies">Agencies</option>
               <option value="salons">Salons</option>
               <option value="gyms">Gyms</option>
+              <option value="dentists">Dentists</option>
+              <option value="real-estate">Real Estate</option>
+              <option value="interior-designers">Interior Designers</option>
+              <option value="architects">Architects</option>
+              <option value="wedding-planners">Wedding Planners</option>
+              <option value="furniture">Furniture</option>
             </select>
             <input
               type="number"
@@ -294,6 +368,42 @@ export default function Dashboard() {
                 </>
               )}
             </button>
+          </div>
+
+          {/* Suggestion chips */}
+          <div className="mb-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+              <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Quick leads — click to fill</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {pipelineSuggestions.map((s, i) => (
+                <button
+                  key={`${s.location}-${s.category}-${i}`}
+                  onClick={() => {
+                    setPipelineLocation(s.location);
+                    setPipelineCategory(s.category);
+                    fetchSuggestions(s.location);
+                  }}
+                  className={`group relative px-3.5 py-2 rounded-xl text-xs font-medium transition-all border ${
+                    s.priority === 'high'
+                      ? 'border-teal-500/30 bg-teal-500/5 text-teal-400 hover:bg-teal-500/10 hover:border-teal-500/50'
+                      : s.priority === 'medium'
+                      ? 'border-amber-500/30 bg-amber-500/5 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50'
+                      : 'border-slate-500/30 bg-slate-500/5 text-slate-400 hover:bg-slate-500/10 hover:border-slate-500/50'
+                  }`}
+                  title={s.desc}
+                >
+                  <span className="font-semibold">{s.label}</span>
+                  <span className="mx-1 opacity-50">·</span>
+                  <span className="opacity-70">{s.location}</span>
+                  {/* Tooltip on hover */}
+                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-1 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)] text-[10px] text-[var(--text-secondary)] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
+                    {s.desc}
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
 
           {pipelineResult && (
@@ -377,6 +487,7 @@ export default function Dashboard() {
               <option value="agency">Agencies</option>
               <option value="salon">Salons</option>
               <option value="gym">Gyms</option>
+              <option value="dentists">Dentists</option>
             </select>
             <input
               type="text"
@@ -443,13 +554,14 @@ export default function Dashboard() {
                 key={lead.id}
                 className="glass-card p-5 card-shine animate-slide-up hover:scale-[1.02] transition-all cursor-pointer"
                 style={{ animationDelay: `${index * 30}ms` }}
+                onClick={() => setExpandedCard(expandedCard === lead.id ? null : lead.id)}
               >
                 <div className="flex items-start justify-between mb-4">
                   <div className="flex-1">
-                    <h3 className="font-semibold text-lg mb-1">{lead.business?.name}</h3>
+                    <h3 className="font-semibold text-lg mb-1">{lead.businesses?.name || lead.business?.name}</h3>
                     <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
                       <Building2 className="w-3.5 h-3.5" />
-                      <span>{lead.business?.category}</span>
+                      <span>{lead.businesses?.category || lead.business?.category}</span>
                     </div>
                   </div>
                   <span className={`badge badge-${lead.priority}`}>{lead.priority}</span>
@@ -458,19 +570,19 @@ export default function Dashboard() {
                 <div className="space-y-2 text-sm mb-4">
                   <div className="flex items-center gap-2 text-[var(--text-secondary)]">
                     <MapPin className="w-3.5 h-3.5" />
-                    <span>{lead.business?.location}</span>
+                    <span>{lead.businesses?.location || lead.business?.location}</span>
                   </div>
-                  {lead.business?.phone && (
+                  {(lead.businesses?.phone || lead.business?.phone) && (
                     <div className="flex items-center gap-2 text-[var(--text-secondary)]">
                       <Phone className="w-3.5 h-3.5" />
-                      <span>{lead.business.phone}</span>
+                      <span>{lead.businesses?.phone || lead.business?.phone}</span>
                     </div>
                   )}
-                  {lead.business?.website ? (
+                  {(lead.businesses?.website || lead.business?.website) ? (
                     <div className="flex items-center gap-2 text-[var(--accent-primary)]">
                       <Globe className="w-3.5 h-3.5" />
-                      <a href={lead.business.website} target="_blank" rel="noopener noreferrer" className="hover:underline truncate">
-                        {lead.business.website.replace(/^https?:\/\//, '')}
+                      <a href={lead.businesses?.website || lead.business?.website} target="_blank" rel="noopener noreferrer" className="hover:underline truncate" onClick={(e) => e.stopPropagation()}>
+                        {(lead.businesses?.website || lead.business?.website)?.replace(/^https?:\/\//, '')}
                       </a>
                     </div>
                   ) : (
@@ -487,21 +599,70 @@ export default function Dashboard() {
                     <span className="text-2xl font-bold">{lead.lead_score}</span>
                   </div>
                   <div className="flex items-center gap-1">
-                    {lead.business?.email && (
-                      <a href={`mailto:${lead.business.email}`} className="p-2 rounded-lg hover:bg-[var(--accent-subtle)] transition-colors">
+                    <a
+                      href={googleMapsUrl(lead.businesses?.name || lead.business?.name || '', lead.businesses?.location || lead.business?.location || '')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2 rounded-lg hover:bg-[var(--accent-subtle)] transition-colors"
+                      title="Open in Google Maps"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MapPin className="w-4 h-4 text-[var(--text-muted)]" />
+                    </a>
+                    <a
+                      href={`https://www.google.com/search?q=${encodeURIComponent(`${lead.businesses?.name || lead.business?.name} ${lead.businesses?.category || lead.business?.category} ${lead.businesses?.location || lead.business?.location}`)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2 rounded-lg hover:bg-[var(--accent-subtle)] transition-colors"
+                      title="Search on Google"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <SearchIcon className="w-4 h-4 text-[var(--text-muted)]" />
+                    </a>
+                    {(lead.businesses?.email || lead.business?.email) && (
+                      <a href={`mailto:${lead.businesses?.email || lead.business?.email}`} className="p-2 rounded-lg hover:bg-[var(--accent-subtle)] transition-colors" onClick={(e) => e.stopPropagation()}>
                         <Mail className="w-4 h-4 text-[var(--text-muted)]" />
                       </a>
                     )}
-                    {lead.business?.website && (
-                      <a href={lead.business.website} target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg hover:bg-[var(--accent-subtle)] transition-colors">
+                    {(lead.businesses?.website || lead.business?.website) && (
+                      <a href={lead.businesses?.website || lead.business?.website} target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg hover:bg-[var(--accent-subtle)] transition-colors" onClick={(e) => e.stopPropagation()}>
                         <ExternalLink className="w-4 h-4 text-[var(--text-muted)]" />
                       </a>
                     )}
-                    <button onClick={() => handleDelete(lead.id)} className="p-2 rounded-lg hover:bg-red-500/10 transition-colors">
+                    <button onClick={(e) => { e.stopPropagation(); handleDelete(lead.id); }} className="p-2 rounded-lg hover:bg-red-500/10 transition-colors">
                       <Trash2 className="w-4 h-4 text-red-400" />
                     </button>
                   </div>
                 </div>
+
+                {/* Expanded content */}
+                {expandedCard === lead.id && (
+                  <div className="mt-4 pt-4 border-t border-[var(--border-color)] animate-fade-in">
+                    {lead.outreach_message && (
+                      <div className="mb-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Outreach Message</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleCopyOutreach(lead.outreach_message!, lead.id); }}
+                            className="flex items-center gap-1 text-xs text-[var(--accent-primary)] hover:text-[var(--accent-primary)]/80"
+                          >
+                            {copiedId === lead.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                            {copiedId === lead.id ? 'Copied!' : 'Copy'}
+                          </button>
+                        </div>
+                        <div className="p-3 rounded-lg bg-[var(--bg-secondary)] text-sm text-[var(--text-secondary)] whitespace-pre-wrap">
+                          {lead.outreach_message}
+                        </div>
+                      </div>
+                    )}
+                    {lead.redesign_suggestions && (
+                      <div>
+                        <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Suggestions</span>
+                        <p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.redesign_suggestions}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -530,24 +691,42 @@ export default function Dashboard() {
                   <tr key={lead.id} className="table-row border-b border-[var(--border-color)]">
                     <td className="p-4">
                       <div>
-                        <p className="font-medium">{lead.business?.name}</p>
-                        {lead.business?.website ? (
-                          <a href={lead.business.website} target="_blank" rel="noopener noreferrer" className="text-xs text-[var(--accent-primary)] hover:underline">
-                            {lead.business.website.replace(/^https?:\/\//, '').slice(0, 30)}
+                        <p className="font-medium">{lead.businesses?.name || lead.business?.name}</p>
+                        {(lead.businesses?.website || lead.business?.website) ? (
+                          <a href={lead.businesses?.website || lead.business?.website} target="_blank" rel="noopener noreferrer" className="text-xs text-[var(--accent-primary)] hover:underline">
+                            {(lead.businesses?.website || lead.business?.website)?.replace(/^https?:\/\//, '').slice(0, 30)}
                           </a>
                         ) : (
                           <span className="text-xs text-red-400">No website</span>
                         )}
                       </div>
                     </td>
-                    <td className="p-4 text-[var(--text-secondary)]">{lead.business?.category}</td>
-                    <td className="p-4 text-[var(--text-secondary)]">{lead.business?.location}</td>
+                    <td className="p-4 text-[var(--text-secondary)]">{lead.businesses?.category || lead.business?.category}</td>
+                    <td className="p-4 text-[var(--text-secondary)]">{lead.businesses?.location || lead.business?.location}</td>
                     <td className="p-4"><span className="text-xl font-bold">{lead.lead_score}</span></td>
                     <td className="p-4"><span className={`badge badge-${lead.priority}`}>{lead.priority}</span></td>
                     <td className="p-4">
                       <div className="flex items-center justify-end gap-1">
-                        {lead.business?.email && (
-                          <a href={`mailto:${lead.business.email}`} className="p-2 rounded-lg hover:bg-[var(--accent-subtle)]">
+                        <a
+                          href={googleMapsUrl(lead.businesses?.name || lead.business?.name || '', lead.businesses?.location || lead.business?.location || '')}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-lg hover:bg-[var(--accent-subtle)]"
+                          title="Open in Google Maps"
+                        >
+                          <MapPin className="w-4 h-4 text-[var(--text-muted)]" />
+                        </a>
+                        <a
+                          href={`https://www.google.com/search?q=${encodeURIComponent(`${lead.businesses?.name || lead.business?.name} ${lead.businesses?.category || lead.business?.category} ${lead.businesses?.location || lead.business?.location}`)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-lg hover:bg-[var(--accent-subtle)]"
+                          title="Search on Google"
+                        >
+                          <SearchIcon className="w-4 h-4 text-[var(--text-muted)]" />
+                        </a>
+                        {(lead.businesses?.email || lead.business?.email) && (
+                          <a href={`mailto:${lead.businesses?.email || lead.business?.email}`} className="p-2 rounded-lg hover:bg-[var(--accent-subtle)]">
                             <Mail className="w-4 h-4 text-[var(--text-muted)]" />
                           </a>
                         )}

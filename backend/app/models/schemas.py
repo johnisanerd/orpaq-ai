@@ -120,3 +120,15 @@ class LeadFilters(BaseModel):
 class ExportRequest(BaseModel):
     format: str = "csv"
     filters: Optional[LeadFilters] = None
+
+
+class PipelineRequestCreate(BaseModel):
+    location: str
+    category: str
+    limit_count: int = 20
+
+
+class DeleteLeadsByFilterRequest(BaseModel):
+    priority: Optional[str] = None
+    location: Optional[str] = None
+    category: Optional[str] = None

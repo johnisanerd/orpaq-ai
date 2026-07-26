@@ -32,8 +32,16 @@ class PipelineService:
         }
 
         try:
+            # Determine source based on available API keys
+            if self.discovery.apify_key:
+                source = "apify"
+            elif self.discovery.serpapi_key:
+                source = "serpapi"
+            else:
+                raise ValueError("No valid API keys found for business discovery (Apify or SerpAPI)")
+
             businesses = await self.discovery.fetch_businesses(
-                location=location, category=category, limit=limit, source="mock"
+                location=location, category=category, limit=limit, source=source
             )
             result["businesses_found"] = len(businesses)
 
@@ -53,15 +61,10 @@ class PipelineService:
                             business_id=business["id"],
                             website_url=business_data["website"],
                             screenshot_only=False,
+                            website_quality=business_data.get(
+                                "website_quality", "unknown"
+                            ),
                         )
-
-                        if analysis_result.get("screenshot_base64"):
-                            ai_result = await self.analysis.analyze_screenshot_with_ai(
-                                analysis_result["screenshot_base64"]
-                            )
-                            analysis_result["ai_ui_score"] = ai_result.get("ui_score")
-                            analysis_result["ai_outdated"] = ai_result.get("outdated")
-                            analysis_result["ai_issues"] = ai_result.get("issues")
 
                         self.db.create_analysis(
                             {
@@ -91,9 +94,14 @@ class PipelineService:
                             pagespeed_score=analysis_result.get("pagespeed_score"),
                             ai_ui_score=analysis_result.get("ai_ui_score"),
                             mobile_friendly=analysis_result.get("mobile_friendly"),
+                            rating=business_data.get("rating"),
+                            outdated=analysis_result.get("ai_outdated"),
                         )
                     else:
-                        scoring = self.scoring.calculate_score(has_website=False)
+                        scoring = self.scoring.calculate_score(
+                            has_website=False,
+                            rating=business_data.get("rating"),
+                        )
 
                     outreach = self.scoring.generate_outreach_message(
                         business_name=business_data["name"],
@@ -101,8 +109,8 @@ class PipelineService:
                         issues=analysis_result.get("ai_issues", [])
                         if business_data.get("website")
                         else ["No website found"],
-                        suggestions=ai_result.get("suggestions", "")
-                        if ai_result
+                        suggestions=analysis_result.get("ai_suggestions", "")
+                        if business_data.get("website")
                         else "",
                     )
 
@@ -112,8 +120,8 @@ class PipelineService:
                             "lead_score": scoring["score"],
                             "priority": scoring["priority"],
                             "outreach_message": outreach,
-                            "redesign_suggestions": ai_result.get("suggestions", "")
-                            if ai_result
+                            "redesign_suggestions": analysis_result.get("ai_suggestions", "")
+                            if business_data.get("website")
                             else "Create a professional website",
                         }
                     )
@@ -168,6 +176,8 @@ class PipelineService:
             pagespeed_score=analysis_result.get("pagespeed_score"),
             ai_ui_score=analysis_result.get("ai_ui_score"),
             mobile_friendly=analysis_result.get("mobile_friendly"),
+            rating=business.get("rating"),
+            outdated=analysis_result.get("ai_outdated"),
         )
 
         existing_leads = self.db.get_leads(filters={"business_id": business_id})

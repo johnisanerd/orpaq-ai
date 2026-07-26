@@ -1,38 +1,80 @@
-# 📈 Orpaq AI
+# Orpaq AI
 
-> **Predictive Growth Intelligence — An autonomous lead generation and website analysis platform powered by AI vision and performance scoring.**
+> **Zero-API-key lead generation platform** — Discovers businesses, analyzes websites, and scores leads using local tools. No external API keys required.
 
-Orpaq AI is a high-performance engine designed to automate the discovery and analysis of business leads. By combining **AI Vision**, **Google PageSpeed Insights**, and **Autonomous Discovery**, it identifies high-value opportunities, scores website technical maturity, and generates personalized outreach strategies.
+## What it does
 
-## ⚡ Core Features
+1. **Discovers** businesses from Google Maps (name, phone, website)
+2. **Analyzes** websites for quality (PageSpeed, mobile-friendliness)
+3. **Scores** leads (HOT/Medium/Low) based on upgrade opportunity
+4. **Outreach** — generates personalized messages for each lead
+5. **Dashboard** — glassmorphic UI to view, filter, export leads
 
-- **Autonomous Discovery**: Intelligent business fetching from global data sources based on location and category.
-- **AI Vision Analysis**: Real-time website UI/UX auditing using large vision models to detect outdated designs or accessibility issues.
-- **Technical Scoring**: Automated performance and mobile-readiness scoring via Google Lighthouse integration.
-- **Agentic Pipeline**: Full-stack automation from discovery to lead scoring and personalized outreach message generation.
-- **Cinematic Dashboard**: A modern, glassmorphic control plane for filtering, exporting, and managing high-value leads.
+Everything runs locally. No API keys, no subscriptions.
 
-## 🛠 Tech Stack
+## Quick start
 
-- **Backend**: FastAPI (Python 3.10+)
-- **Frontend**: Next.js 16 (React)
-- **Database**: Supabase (PostgreSQL + RLS)
-- **Intelligence**: OpenAI (Vision) + Google PageSpeed API
-- **Automation**: Playwright (Headless Browser)
-- **Containerization**: Docker + Docker Compose
+```bash
+# 1. Start the backend
+cd backend
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-## 🚀 Getting Started
+# 2. Start the frontend
+cd frontend
+npm run dev
 
-1. **Environment Setup**:
-   Provide your `SUPABASE_URL`, `OPENAI_API_KEY`, and `PAGESPEED_API_KEY` in the backend configuration.
+# 3. Discover leads
+python3 ~/.hermes/scripts/orpaq-research.py full "Kochi" "gyms" --max 20
+```
 
-2. **Deploy Platform**:
-   ```bash
-   docker-compose up --build
-   ```
+Open http://localhost:3001 (frontend) or hit http://localhost:8000/api/v1 (API).
 
-3. **Access Intelligence Hub**:
-   Open **[http://localhost:3000](http://localhost:3000)** to launch your first discovery pipeline.
+## Tech Stack
 
----
-*Orpaq AI: Engineering High-Velocity Growth.*
+- **Backend**: FastAPI + SQLite
+- **Frontend**: Next.js 16 + Tailwind CSS
+- **Discovery**: Playwright (Google Maps scraping)
+- **Analysis**: Playwright performance API
+- **Scoring**: Local algorithm (no AI API needed)
+
+## How it works
+
+```
+Google Maps (Playwright) → SQLite DB → FastAPI → Next.js Dashboard
+         ↓
+   Place page extraction (phone, website, rating)
+         ↓
+   Website analysis (PageSpeed, mobile check)
+         ↓
+   Lead scoring (HOT if no website)
+```
+
+## Data
+
+- Database: `~/.orpaq/leads.db` (SQLite, auto-created)
+- Suggestions auto-generated from your existing data
+- No external API calls — everything runs on your machine
+
+## Pipeline
+
+```bash
+# Full pipeline: discover + analyze + score
+python3 ~/.hermes/scripts/orpaq-research.py full "Kochi" "dentists" --max 20
+
+# Discover only (just scrape Maps)
+python3 ~/.hermes/scripts/orpaq-research.py discover "Kochi" "gyms" --max 10
+
+# Check what needs enrichment
+python3 ~/.hermes/scripts/orpaq-research.py needs-enrich
+
+# Save a lead manually
+python3 ~/.hermes/scripts/orpaq-write.py lead '{"business_id":"<id>","lead_score":95,"priority":"hot"}'
+```
+
+## Environment
+
+No API keys needed. The `.env` file is optional — defaults work out of the box.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SQLITE_PATH` | `~/.orpaq/leads.db` | Database location |

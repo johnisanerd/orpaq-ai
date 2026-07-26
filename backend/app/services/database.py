@@ -1,319 +1,474 @@
-from supabase import create_client, Client
-from typing import Optional, Any
-from datetime import datetime
+import sqlite3
+import json
+import threading
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
 
 from app.config import settings
 
 
+DB_PATH = Path(settings.SQLITE_PATH or Path.home() / ".orpaq" / "leads.db")
+
+
 class Database:
-    client: Optional[Client] = None
-    _in_memory: dict = {"businesses": [], "analyses": [], "leads": []}
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._connection: sqlite3.Connection = None  # type: ignore
 
     def init(self):
-        if settings.SUPABASE_URL and settings.SUPABASE_KEY:
-            try:
-                self.client = create_client(
-                    settings.SUPABASE_URL, settings.SUPABASE_KEY
-                )
-            except Exception as e:
-                print(f"Supabase connection failed: {e}")
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        self._connection = conn
+        self._create_tables()
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        assert self._connection is not None, "Database not initialized. Call db.init() first."
+        return self._connection
+
+    def _create_tables(self):
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS businesses (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                website TEXT,
+                phone TEXT,
+                email TEXT,
+                category TEXT NOT NULL,
+                location TEXT NOT NULL,
+                address TEXT,
+                rating REAL,
+                reviews_count INTEGER,
+                source TEXT DEFAULT 'google_maps',
+                website_quality TEXT DEFAULT 'unknown',
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS analyses (
+                id TEXT PRIMARY KEY,
+                business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                screenshot_url TEXT,
+                pagespeed_score INTEGER,
+                pagespeed_issues TEXT,
+                mobile_friendly INTEGER,
+                ai_ui_score REAL,
+                ai_outdated INTEGER,
+                ai_issues TEXT,
+                ai_suggestions TEXT,
+                analysis_status TEXT DEFAULT 'pending',
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS leads (
+                id TEXT PRIMARY KEY,
+                business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                lead_score INTEGER NOT NULL,
+                priority TEXT DEFAULT 'low',
+                outreach_message TEXT,
+                redesign_suggestions TEXT,
+                pipeline_id TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS pipeline_requests (
+                id TEXT PRIMARY KEY,
+                location TEXT NOT NULL,
+                category TEXT NOT NULL,
+                limit_count INTEGER DEFAULT 20,
+                status TEXT DEFAULT 'pending',
+                result TEXT,
+                error TEXT,
+                requested_at TEXT,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                id TEXT PRIMARY KEY,
+                location TEXT,
+                category TEXT,
+                businesses_found INTEGER DEFAULT 0,
+                businesses_stored INTEGER DEFAULT 0,
+                websites_analyzed INTEGER DEFAULT 0,
+                leads_generated INTEGER DEFAULT 0,
+                errors TEXT,
+                status TEXT DEFAULT 'running',
+                started_at TEXT,
+                completed_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_businesses_location ON businesses(location);
+            CREATE INDEX IF NOT EXISTS idx_businesses_category ON businesses(category);
+            CREATE INDEX IF NOT EXISTS idx_analyses_business ON analyses(business_id);
+            CREATE INDEX IF NOT EXISTS idx_leads_business ON leads(business_id);
+            CREATE INDEX IF NOT EXISTS idx_leads_priority ON leads(priority);
+            CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(lead_score);
+            CREATE INDEX IF NOT EXISTS idx_pipeline_requests_status ON pipeline_requests(status);
+        """)
+        self.conn.commit()
+
+    def _now(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _new_id(self) -> str:
+        return str(uuid.uuid4())
+
+    def _row_to_dict(self, row: Optional[sqlite3.Row]) -> dict:
+        if row is None:
+            return {}
+        return dict(row)
+
+    def _rows_to_list(self, rows: list[sqlite3.Row]) -> list[dict]:
+        return [dict(r) for r in rows]
+
+    # ─── Business CRUD ───────────────────────────────────────────────
 
     def create_business(self, data: dict) -> dict:
-        if not self.client:
-            record = {
-                "id": str(uuid.uuid4()),
-                **data,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
+        with self._lock:
+            now = self._now()
+            row_id = self._new_id()
+            self.conn.execute(
+                """INSERT INTO businesses (id, name, website, phone, email, category, location,
+                   address, rating, reviews_count, source, website_quality, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    row_id,
+                    data.get("name", ""),
+                    data.get("website"),
+                    data.get("phone"),
+                    data.get("email"),
+                    data.get("category", ""),
+                    data.get("location", ""),
+                    data.get("address"),
+                    data.get("rating"),
+                    data.get("reviews_count"),
+                    data.get("source", "google_maps"),
+                    data.get("website_quality", "unknown"),
+                    now,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            return {
+                "id": row_id,
+                **{k: v for k, v in data.items() if k != "id"},
+                "created_at": now,
+                "updated_at": now,
             }
-            self._in_memory["businesses"].append(record)
-            return record
-
-        data["id"] = str(uuid.uuid4())
-        data["created_at"] = datetime.utcnow().isoformat()
-        data["updated_at"] = datetime.utcnow().isoformat()
-        response = self.client.table("businesses").insert(data).execute()
-        return response.data[0] if response.data else data
 
     def get_business(self, business_id: str) -> Optional[dict]:
-        if not self.client:
-            for b in self._in_memory["businesses"]:
-                if b["id"] == business_id:
-                    return b
-            return None
-        response = (
-            self.client.table("businesses").select("*").eq("id", business_id).execute()
-        )
-        return response.data[0] if response.data else None
+        cur = self.conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,))
+        row = cur.fetchone()
+        return self._row_to_dict(row) if row else None
 
     def get_businesses(
-        self,
-        location: Optional[str] = None,
-        category: Optional[str] = None,
-        limit: int = 100,
+        self, location: Optional[str] = None, category: Optional[str] = None, limit: int = 100
     ) -> list[dict]:
-        if not self.client:
-            results = self._in_memory["businesses"]
-            if location:
-                results = [
-                    b
-                    for b in results
-                    if location.lower() in b.get("location", "").lower()
-                ]
-            if category:
-                results = [
-                    b
-                    for b in results
-                    if category.lower() in b.get("category", "").lower()
-                ]
-            return results[:limit]
-
-        query = self.client.table("businesses").select("*")
+        sql = "SELECT * FROM businesses WHERE 1=1"
+        params = []
         if location:
-            query = query.ilike("location", f"%{location}%")
+            sql += " AND LOWER(location) LIKE ?"
+            params.append(f"%{location.lower()}%")
         if category:
-            query = query.eq("category", category)
-        response = query.limit(limit).execute()
-        return response.data or []
+            sql += " AND LOWER(category) = ?"
+            params.append(category.lower())
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cur = self.conn.execute(sql, params)
+        return self._rows_to_list(cur.fetchall())
 
     def update_business(self, business_id: str, data: dict) -> dict:
-        if not self.client:
-            for i, b in enumerate(self._in_memory["businesses"]):
-                if b["id"] == business_id:
-                    b.update(data)
-                    b["updated_at"] = datetime.utcnow().isoformat()
-                    return b
-            return {"id": business_id, **data}
-        data["updated_at"] = datetime.utcnow().isoformat()
-        response = (
-            self.client.table("businesses").update(data).eq("id", business_id).execute()
-        )
-        return response.data[0] if response.data else data
+        now = self._now()
+        fields = {k: v for k, v in data.items() if k != "id"}
+        fields["updated_at"] = now
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [business_id]
+        self.conn.execute(f"UPDATE businesses SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+        return {"id": business_id, **data, "updated_at": now}
+
+    # ─── Analysis CRUD ──────────────────────────────────────────────
 
     def create_analysis(self, data: dict) -> dict:
-        if not self.client:
-            record = {
-                "id": str(uuid.uuid4()),
-                **data,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-            self._in_memory["analyses"].append(record)
-            return record
+        with self._lock:
+            now = self._now()
+            row_id = self._new_id()
+            # Serialize list/dict fields to JSON
+            pagespeed_issues = data.get("pagespeed_issues")
+            ai_issues = data.get("ai_issues")
+            if isinstance(pagespeed_issues, (list, dict)):
+                pagespeed_issues = json.dumps(pagespeed_issues)
+            if isinstance(ai_issues, (list, dict)):
+                ai_issues = json.dumps(ai_issues)
 
-        data["id"] = str(uuid.uuid4())
-        data["created_at"] = datetime.utcnow().isoformat()
-        data["updated_at"] = datetime.utcnow().isoformat()
-        response = self.client.table("analyses").insert(data).execute()
-        return response.data[0] if response.data else data
+            self.conn.execute(
+                """INSERT INTO analyses (id, business_id, screenshot_url, pagespeed_score,
+                   pagespeed_issues, mobile_friendly, ai_ui_score, ai_outdated, ai_issues,
+                   ai_suggestions, analysis_status, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    row_id,
+                    data.get("business_id"),
+                    data.get("screenshot_url"),
+                    data.get("pagespeed_score"),
+                    pagespeed_issues,
+                    1 if data.get("mobile_friendly") else 0,
+                    data.get("ai_ui_score"),
+                    1 if data.get("ai_outdated") else 0,
+                    ai_issues,
+                    data.get("ai_suggestions"),
+                    data.get("analysis_status", "completed"),
+                    now,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            return {
+                "id": row_id,
+                **{k: v for k, v in data.items() if k != "id"},
+                "created_at": now,
+                "updated_at": now,
+            }
 
     def get_analysis(self, business_id: str) -> Optional[dict]:
-        if not self.client:
-            for a in self._in_memory["analyses"]:
-                if a.get("business_id") == business_id:
-                    return a
-            return None
-        response = (
-            self.client.table("analyses")
-            .select("*")
-            .eq("business_id", business_id)
-            .execute()
+        cur = self.conn.execute(
+            "SELECT * FROM analyses WHERE business_id = ? ORDER BY created_at DESC LIMIT 1",
+            (business_id,),
         )
-        return response.data[0] if response.data else None
+        row = cur.fetchone()
+        return self._row_to_dict(row) if row else None
 
     def update_analysis(self, analysis_id: str, data: dict) -> dict:
-        if not self.client:
-            for i, a in enumerate(self._in_memory["analyses"]):
-                if a["id"] == analysis_id:
-                    a.update(data)
-                    a["updated_at"] = datetime.utcnow().isoformat()
-                    return a
-            return {"id": analysis_id, **data}
-        data["updated_at"] = datetime.utcnow().isoformat()
-        response = (
-            self.client.table("analyses").update(data).eq("id", analysis_id).execute()
-        )
-        return response.data[0] if response.data else data
+        now = self._now()
+        fields = {k: v for k, v in data.items() if k != "id"}
+        fields["updated_at"] = now
+        # Deserialize for storage
+        for key in ("pagespeed_issues", "ai_issues"):
+            if key in fields and isinstance(fields[key], (list, dict)):
+                fields[key] = json.dumps(fields[key])
+        for key in ("mobile_friendly", "ai_outdated"):
+            if key in fields:
+                fields[key] = 1 if fields[key] else 0
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [analysis_id]
+        self.conn.execute(f"UPDATE analyses SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+        return {"id": analysis_id, **data, "updated_at": now}
+
+    # ─── Lead CRUD ──────────────────────────────────────────────────
 
     def create_lead(self, data: dict) -> dict:
-        if not self.client:
-            record = {
-                "id": str(uuid.uuid4()),
-                **data,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
+        with self._lock:
+            now = self._now()
+            row_id = self._new_id()
+            self.conn.execute(
+                """INSERT INTO leads (id, business_id, lead_score, priority, outreach_message,
+                   redesign_suggestions, pipeline_id, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    row_id,
+                    data.get("business_id"),
+                    data.get("lead_score", 0),
+                    data.get("priority", "low"),
+                    data.get("outreach_message"),
+                    data.get("redesign_suggestions"),
+                    data.get("pipeline_id"),
+                    now,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            return {
+                "id": row_id,
+                **{k: v for k, v in data.items() if k != "id"},
+                "created_at": now,
+                "updated_at": now,
             }
-            self._in_memory["leads"].append(record)
-            return record
-
-        data["id"] = str(uuid.uuid4())
-        data["created_at"] = datetime.utcnow().isoformat()
-        data["updated_at"] = datetime.utcnow().isoformat()
-        response = self.client.table("leads").insert(data).execute()
-        return response.data[0] if response.data else data
 
     def get_leads(self, filters: Optional[dict] = None, limit: int = 100) -> list[dict]:
-        if not self.client:
-            leads = self._in_memory["leads"]
-            if filters:
-                if "priority" in filters and filters["priority"]:
-                    leads = [
-                        l for l in leads if l.get("priority") == filters["priority"]
-                    ]
-                if "min_score" in filters and filters["min_score"]:
-                    leads = [
-                        l
-                        for l in leads
-                        if l.get("lead_score", 0) >= filters["min_score"]
-                    ]
-                if "max_score" in filters and filters["max_score"]:
-                    leads = [
-                        l
-                        for l in leads
-                        if l.get("lead_score", 0) <= filters["max_score"]
-                    ]
-            results = sorted(leads, key=lambda x: x.get("lead_score", 0), reverse=True)[
-                :limit
-            ]
-            enriched = []
-            for lead in results:
-                business = next(
-                    (
-                        b
-                        for b in self._in_memory["businesses"]
-                        if b["id"] == lead.get("business_id")
-                    ),
-                    None,
-                )
-                analysis = next(
-                    (
-                        a
-                        for a in self._in_memory["analyses"]
-                        if a.get("business_id") == lead.get("business_id")
-                    ),
-                    None,
-                )
-                enriched.append(
-                    {**lead, "businesses": business or {}, "analyses": analysis or {}}
-                )
-            return enriched
-
-        # Get leads
-        query = self.client.table("leads").select("*")
+        sql = """SELECT l.*, b.id as b_id, b.name as b_name, b.website as b_website,
+                 b.phone as b_phone, b.email as b_email, b.category as b_category,
+                 b.location as b_location, b.address as b_address, b.rating as b_rating,
+                 b.reviews_count as b_reviews_count, b.source as b_source,
+                 a.id as a_id, a.pagespeed_score as a_pagespeed_score,
+                 a.mobile_friendly as a_mobile_friendly, a.ai_ui_score as a_ai_ui_score,
+                 a.ai_outdated as a_ai_outdated, a.ai_issues as a_ai_issues,
+                 a.ai_suggestions as a_ai_suggestions, a.screenshot_url as a_screenshot_url,
+                 a.analysis_status as a_analysis_status
+                 FROM leads l
+                 LEFT JOIN businesses b ON l.business_id = b.id
+                 LEFT JOIN analyses a ON a.business_id = l.business_id
+                 WHERE 1=1"""
+        params = []
         if filters:
             if "priority" in filters and filters["priority"]:
-                query = query.eq("priority", filters["priority"])
-            if "min_score" in filters and filters["min_score"]:
-                query = query.gte("lead_score", filters["min_score"])
-            if "max_score" in filters and filters["max_score"]:
-                query = query.lte("lead_score", filters["max_score"])
-        leads_data = (
-            query.order("lead_score", desc=True).limit(limit).execute().data or []
-        )
+                sql += " AND l.priority = ?"
+                params.append(filters["priority"])
+            if "min_score" in filters and filters["min_score"] is not None:
+                sql += " AND l.lead_score >= ?"
+                params.append(filters["min_score"])
+            if "max_score" in filters and filters["max_score"] is not None:
+                sql += " AND l.lead_score <= ?"
+                params.append(filters["max_score"])
+            if filters.get("has_website") is not None:
+                if filters["has_website"]:
+                    sql += " AND b.website IS NOT NULL AND b.website != ''"
+                else:
+                    sql += " AND (b.website IS NULL OR b.website = '')"
+            if filters.get("location"):
+                sql += " AND LOWER(b.location) LIKE ?"
+                params.append(f"%{filters['location'].lower()}%")
+            if filters.get("category"):
+                sql += " AND LOWER(b.category) = ?"
+                params.append(filters["category"].lower())
+            if filters.get("search"):
+                sql += " AND LOWER(b.name) LIKE ?"
+                params.append(f"%{filters['search'].lower()}%")
+        sql += " ORDER BY l.lead_score DESC LIMIT ?"
+        params.append(limit)
 
-        # Get related businesses and analyses separately
+        cur = self.conn.execute(sql, params)
+        rows = cur.fetchall()
         enriched = []
-        for lead in leads_data:
-            business_id = lead.get("business_id")
-            business = (
-                self.client.table("businesses")
-                .select("*")
-                .eq("id", business_id)
-                .execute()
-                .data[0]
-                if business_id
-                else None
-            )
-            analysis = (
-                self.client.table("analyses")
-                .select("*")
-                .eq("business_id", business_id)
-                .execute()
-                .data[0]
-                if business_id
-                else None
-            )
+        for row in rows:
+            d = dict(row)
             enriched.append(
-                {**lead, "businesses": business or {}, "analyses": analysis or {}}
+                {
+                    "id": d["id"],
+                    "business_id": d["business_id"],
+                    "lead_score": d["lead_score"],
+                    "priority": d["priority"],
+                    "outreach_message": d["outreach_message"],
+                    "redesign_suggestions": d["redesign_suggestions"],
+                    "pipeline_id": d["pipeline_id"],
+                    "created_at": d["created_at"],
+                    "updated_at": d["updated_at"],
+                    "businesses": {
+                        "id": d["b_id"],
+                        "name": d["b_name"],
+                        "website": d["b_website"],
+                        "phone": d["b_phone"],
+                        "email": d["b_email"],
+                        "category": d["b_category"],
+                        "location": d["b_location"],
+                        "address": d["b_address"],
+                        "rating": d["b_rating"],
+                        "reviews_count": d["b_reviews_count"],
+                        "source": d["b_source"],
+                    }
+                    if d.get("b_id")
+                    else {},
+                    "analyses": {
+                        "id": d["a_id"],
+                        "pagespeed_score": d["a_pagespeed_score"],
+                        "mobile_friendly": bool(d["a_mobile_friendly"]) if d.get("a_mobile_friendly") is not None else None,
+                        "ai_ui_score": d["a_ai_ui_score"],
+                        "ai_outdated": bool(d["a_ai_outdated"]) if d.get("a_ai_outdated") is not None else None,
+                        "ai_issues": json.loads(d["a_ai_issues"]) if d.get("a_ai_issues") else None,
+                        "ai_suggestions": d["a_ai_suggestions"],
+                        "screenshot_url": d["a_screenshot_url"],
+                        "analysis_status": d["a_analysis_status"],
+                    }
+                    if d.get("a_id")
+                    else {},
+                }
             )
-
         return enriched
 
     def get_lead(self, lead_id: str) -> Optional[dict]:
-        if not self.client:
-            lead = next(
-                (l for l in self._in_memory["leads"] if l["id"] == lead_id), None
-            )
-            if lead:
-                business = next(
-                    (
-                        b
-                        for b in self._in_memory["businesses"]
-                        if b["id"] == lead.get("business_id")
-                    ),
-                    None,
-                )
-                analysis = next(
-                    (
-                        a
-                        for a in self._in_memory["analyses"]
-                        if a.get("business_id") == lead.get("business_id")
-                    ),
-                    None,
-                )
-                return {
-                    **lead,
-                    "businesses": business or {},
-                    "analyses": analysis or {},
-                }
-            return None
-        response = (
-            self.client.table("leads")
-            .select("*, businesses(*), analyses(*)")
-            .eq("id", lead_id)
-            .execute()
-        )
-        return response.data[0] if response.data else None
+        leads = self.get_leads(limit=1000)
+        for lead in leads:
+            if lead["id"] == lead_id:
+                return lead
+        return None
 
     def update_lead(self, lead_id: str, data: dict) -> dict:
-        if not self.client:
-            for i, l in enumerate(self._in_memory["leads"]):
-                if l["id"] == lead_id:
-                    l.update(data)
-                    l["updated_at"] = datetime.utcnow().isoformat()
-                    return l
-            return {"id": lead_id, **data}
-        data["updated_at"] = datetime.utcnow().isoformat()
-        response = self.client.table("leads").update(data).eq("id", lead_id).execute()
-        return response.data[0] if response.data else data
+        now = self._now()
+        fields = {k: v for k, v in data.items() if k != "id"}
+        fields["updated_at"] = now
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [lead_id]
+        self.conn.execute(f"UPDATE leads SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+        return {"id": lead_id, **data, "updated_at": now}
 
     def delete_lead(self, lead_id: str) -> bool:
-        if not self.client:
-            self._in_memory["leads"] = [
-                l for l in self._in_memory["leads"] if l["id"] != lead_id
-            ]
-            return True
-        response = self.client.table("leads").delete().eq("id", lead_id).execute()
-        return bool(response.data)
+        cur = self.conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def get_lead_stats(self) -> dict:
-        if not self.client:
-            leads = self._in_memory["leads"]
-            return {
-                "total": len(leads),
-                "hot": sum(1 for l in leads if l.get("priority") == "hot"),
-                "medium": sum(1 for l in leads if l.get("priority") == "medium"),
-                "low": sum(1 for l in leads if l.get("priority") == "low"),
-            }
-        response = self.client.table("leads").select("priority").execute()
-        leads = response.data or []
-        return {
-            "total": len(leads),
-            "hot": sum(1 for l in leads if l.get("priority") == "hot"),
-            "medium": sum(1 for l in leads if l.get("priority") == "medium"),
-            "low": sum(1 for l in leads if l.get("priority") == "low"),
-        }
+        cur = self.conn.execute(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN priority='hot' THEN 1 ELSE 0 END) as hot, "
+            "SUM(CASE WHEN priority='medium' THEN 1 ELSE 0 END) as medium, "
+            "SUM(CASE WHEN priority='low' THEN 1 ELSE 0 END) as low "
+            "FROM leads"
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {"total": 0, "hot": 0, "medium": 0, "low": 0}
+
+    # ─── Pipeline Requests ──────────────────────────────────────────
+
+    def create_pipeline_request(self, location: str, category: str, limit_count: int = 20) -> dict:
+        with self._lock:
+            now = self._now()
+            row_id = self._new_id()
+            self.conn.execute(
+                "INSERT INTO pipeline_requests (id, location, category, limit_count, status, requested_at) VALUES (?,?,?,?,?,?)",
+                (row_id, location, category, limit_count, "pending", now),
+            )
+            self.conn.commit()
+            return {"id": row_id, "location": location, "category": category, "limit_count": limit_count, "status": "pending", "requested_at": now}
+
+    def get_pending_pipeline_requests(self) -> list[dict]:
+        cur = self.conn.execute(
+            "SELECT * FROM pipeline_requests WHERE status = 'pending' ORDER BY requested_at ASC LIMIT 10"
+        )
+        return self._rows_to_list(cur.fetchall())
+
+    def update_pipeline_request(self, req_id: str, status: str, result: Optional[str] = None, error: Optional[str] = None):
+        now = self._now()
+        self.conn.execute(
+            "UPDATE pipeline_requests SET status=?, result=?, error=?, completed_at=? WHERE id=?",
+            (status, result, error, now, req_id),
+        )
+        self.conn.commit()
+
+    # ─── Pipeline Runs ──────────────────────────────────────────────
+
+    def create_pipeline_run(self, location: str, category: str) -> str:
+        with self._lock:
+            now = self._now()
+            row_id = self._new_id()
+            self.conn.execute(
+                "INSERT INTO pipeline_runs (id, location, category, status, started_at) VALUES (?,?,?,?,?)",
+                (row_id, location, category, "running", now),
+            )
+            self.conn.commit()
+            return row_id
+
+    def update_pipeline_run(self, run_id: str, **kwargs):
+        now = self._now()
+        kwargs["updated_at"] = now
+        set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+        values = list(kwargs.values()) + [run_id]
+        self.conn.execute(f"UPDATE pipeline_runs SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+
+    def get_pipeline_runs(self, limit: int = 20) -> list[dict]:
+        cur = self.conn.execute(
+            "SELECT * FROM pipeline_runs ORDER BY started_at DESC LIMIT ?", (limit,)
+        )
+        return self._rows_to_list(cur.fetchall())
 
 
 db = Database()
