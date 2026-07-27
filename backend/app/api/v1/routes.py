@@ -18,6 +18,7 @@ import sys
 import subprocess
 import threading
 import uuid
+import httpx
 from pathlib import Path
 
 RESEARCH_SCRIPT = str(Path.home() / ".hermes" / "scripts" / "orpaq-research.py")
@@ -187,7 +188,8 @@ async def run_pipeline(request: RunPipelineRequest):
             import sys as _sys
             result = subprocess.run(
                 [_sys.executable or "python3", RESEARCH_SCRIPT, "full",
-                 request.location, request.category, "--max", str(request.limit or 20)],
+                 request.location, request.category, "--max", str(request.limit or 20),
+                 "--run-id", run_id],
                 capture_output=True, text=True, timeout=300,
             )
             # Update pipeline run status
@@ -449,3 +451,39 @@ async def get_suggestions(location: Optional[str] = Query(None), limit: int = 12
     ))
 
     return suggestions[:limit]
+
+@router.post("/leads/{lead_id}/enrich")
+async def enrich_lead(lead_id: str):
+    """Re-trigger single-lead visual enrichment."""
+    try:
+        subprocess.run(
+            ["hermes", "run", "-s", "orpaq-browser-search", "-c", f"enrich {lead_id}"],
+            capture_output=True, text=True, timeout=300,
+        )
+        lead = db.get_lead(lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        return lead
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/leads/{lead_id}/whatsapp")
+async def send_whatsapp(lead_id: str):
+    """Wire lead outreach messages directly to the local WhatsApp browser bridge."""
+    lead = db.get_lead(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    phone = lead.get("businesses", {}).get("phone") or lead.get("business", {}).get("phone")
+    message = lead.get("outreach_message")
+    if not phone or not message:
+        raise HTTPException(status_code=400, detail="Missing phone or message")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post("http://127.0.0.1:10086/send", json={"phone": phone, "message": message}, timeout=30)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=500, detail="WhatsApp bridge failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "sent"}
+

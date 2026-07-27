@@ -8,7 +8,7 @@
 2. **Analyzes** websites for quality (PageSpeed, mobile-friendliness)
 3. **Scores** leads (HOT/Medium/Low) based on upgrade opportunity
 4. **Outreach** — generates personalized messages for each lead
-5. **Dashboard** — glassmorphic UI to view, filter, export leads
+5. **Dashboard** — Clean, performant, and minimal UI to view, filter, export leads, and trigger WhatsApp outreach directly via local bridge (port `10086`).
 
 Everything runs locally. No API keys, no subscriptions.
 

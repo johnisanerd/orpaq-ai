@@ -106,4 +106,14 @@ export const leadsApi = {
     const response = await api.post('/export', { format, filters });
     return response.data;
   },
+
+  enrichLead: async (id: string) => {
+    const response = await api.post(`/leads/${id}/enrich`);
+    return response.data;
+  },
+
+  sendWhatsapp: async (id: string) => {
+    const response = await api.post(`/leads/${id}/whatsapp`);
+    return response.data;
+  },
 };

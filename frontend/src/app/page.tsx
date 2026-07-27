@@ -20,6 +20,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState({ total: 0, hot: 0, medium: 0, low: 0 });
   const [loading, setLoading] = useState(true);
   const [runningPipeline, setRunningPipeline] = useState(false);
+  const [enriching, setEnriching] = useState<string | null>(null);
+  const [sendingWa, setSendingWa] = useState<string | null>(null);
   const [filters, setFilters] = useState<LeadFilters>({});
   const [mounted, setMounted] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -144,17 +146,50 @@ export default function Dashboard() {
     setFilters({});
   };
 
+  const [pipelineStatus, setPipelineStatus] = useState('');
+  const [pipelineElapsed, setPipelineElapsed] = useState(0);
+
   const handleRunPipeline = async () => {
     if (!pipelineLocation) return;
     setRunningPipeline(true);
     setPipelineResult(null);
+    setPipelineStatus('Starting research...');
+    setPipelineElapsed(0);
+    const startTime = Date.now();
+    const elapsedInt = setInterval(() => {
+      setPipelineElapsed(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
     try {
-      await leadsApi.runPipeline(pipelineLocation, pipelineCategory, parseInt(pipelineLimit));
+      const result = await leadsApi.runPipeline(pipelineLocation, pipelineCategory, parseInt(pipelineLimit));
+      const runId = result.run_id;
+      if (!runId) {
+        setPipelineStatus('Pipeline started, waiting for results...');
+        // No run_id returned, just wait then refresh
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      } else {
+        // Poll for completion
+        setPipelineStatus('Researching...');
+        for (let i = 0; i < 60; i++) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          try {
+            const runsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'}/pipeline-runs?limit=5`);
+            const runs = await runsRes.json();
+            const thisRun = runs.find((r: any) => r.id === runId);
+            if (thisRun && (thisRun.status === 'completed' || thisRun.status === 'failed')) {
+              setPipelineStatus(thisRun.status === 'completed' ? 'Research complete!' : `Failed: ${thisRun.errors || 'unknown error'}`);
+              setPipelineResult(thisRun);
+              break;
+            }
+          } catch {}
+        }
+      }
       await loadData();
     } catch (error) {
       console.error('Pipeline failed:', error);
+      setPipelineStatus('Research failed');
     } finally {
-      setRunningPipeline(false);
+      clearInterval(elapsedInt);
+      setTimeout(() => setRunningPipeline(false), 2000);
     }
   };
 
@@ -210,6 +245,32 @@ export default function Dashboard() {
     }
   };
 
+  const handleEnrich = async (id: string) => {
+    setEnriching(id);
+    try {
+      await leadsApi.enrichLead(id);
+      await loadData();
+    } catch (error) {
+      console.error('Enrich failed:', error);
+      alert('Failed to enrich lead');
+    } finally {
+      setEnriching(null);
+    }
+  };
+
+  const handleWhatsapp = async (id: string) => {
+    setSendingWa(id);
+    try {
+      await leadsApi.sendWhatsapp(id);
+      alert('Message sent to WhatsApp bridge!');
+    } catch (error) {
+      console.error('WhatsApp failed:', error);
+      alert('Failed to send via WhatsApp');
+    } finally {
+      setSendingWa(null);
+    }
+  };
+
   const sortedLeads = [...leads].sort((a, b) => {
     let aVal: any = a[sortField as keyof Lead];
     let bVal: any = b[sortField as keyof Lead];
@@ -237,17 +298,17 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-mesh">
+    <div className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)]">
       {/* Header */}
-      <header className="sticky top-0 z-50 glass border-b border-[var(--border-color)]">
+      <header className="sticky top-0 z-50 bg-[var(--bg-primary)] border-b border-[var(--border-color)]">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center glow-teal">
+              <div className="w-9 h-9 rounded-lg bg-[var(--accent-primary)] flex items-center justify-center">
                 <Sparkles className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold bg-gradient-to-r from-teal-400 to-cyan-400 bg-clip-text text-transparent">
+                <h1 className="text-lg font-semibold text-[var(--text-primary)]">
                   Orpaq AI
                 </h1>
                 <p className="text-xs text-[var(--text-muted)]">Lead Generation Platform</p>
@@ -255,24 +316,24 @@ export default function Dashboard() {
             </div>
             
             <div className="flex items-center gap-3">
-              <span className="text-sm text-gray-400">{user?.email}</span>
+              <span className="text-sm text-[var(--text-muted)]">{user?.email}</span>
               <button
                 onClick={() => signOut()}
-                className="p-2.5 rounded-xl glass hover:border-red-500 transition-all"
+                className="p-2 rounded-lg hover:bg-[var(--bg-secondary)] border border-transparent hover:border-[var(--border-color)] transition-all"
               >
-                <LogOut className="w-4 h-4 text-gray-400" />
+                <LogOut className="w-4 h-4 text-[var(--text-secondary)]" />
               </button>
               <ThemeToggle />
               <button
                 onClick={() => loadData()}
                 disabled={loading}
-                className="p-2.5 rounded-xl glass hover:border-[var(--accent-primary)] transition-all"
+                className="p-2 rounded-lg hover:bg-[var(--bg-secondary)] border border-transparent hover:border-[var(--border-color)] transition-all"
               >
                 <RefreshCw className={`w-4 h-4 text-[var(--text-secondary)] ${loading ? 'animate-spin' : ''}`} />
               </button>
               <button
                 onClick={() => handleExport('csv')}
-                className="px-4 py-2 rounded-xl glass text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--accent-primary)] hover:border-[var(--accent-primary)] transition-all flex items-center gap-2"
+                className="px-4 py-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] text-sm font-medium hover:border-[var(--accent-primary)] transition-all flex items-center gap-2"
               >
                 <Download className="w-4 h-4" />
                 Export
@@ -288,8 +349,7 @@ export default function Dashboard() {
           {statCards.map((card, index) => (
             <div
               key={card.label}
-              className="glass-card p-5 animate-slide-up"
-              style={{ animationDelay: `${index * 50}ms` }}
+              className="surface-card p-5"
             >
               <div className="flex items-center justify-between">
                 <div>
@@ -308,75 +368,90 @@ export default function Dashboard() {
         </div>
 
         {/* Pipeline Runner */}
-        <div className="glass-card p-6 mb-8 animate-slide-up" style={{ animationDelay: '200ms' }}>
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center">
-              <Play className="w-4 h-4 text-white" />
+        <section className="surface-card p-6 md:p-8 mb-8">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-lg bg-[var(--accent-primary)] flex items-center justify-center">
+                <Target className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Discovery Pipeline</h2>
+                <p className="text-sm text-[var(--text-muted)] mt-1">Deploy autonomous agent to scan and score leads</p>
+              </div>
             </div>
-            <h2 className="text-lg font-semibold">Discovery Pipeline</h2>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_200px_120px_180px] gap-4 mb-6">
             <div className="relative">
-              <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+              <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-muted)] pointer-events-none" />
               <input
                 type="text"
                 placeholder="Location (e.g., Kochi)"
                 value={pipelineLocation}
                 onChange={(e) => handleLocationChange(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-primary)] transition-all"
+                className="w-full pl-12 pr-4 py-3.5 premium-input text-sm font-medium"
               />
             </div>
-            <select
-              value={pipelineCategory}
-              onChange={(e) => setPipelineCategory(e.target.value)}
-              className="px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] focus:border-[var(--accent-primary)] transition-all"
-            >
-              <option value="restaurants">Restaurants</option>
-              <option value="clinics">Clinics</option>
-              <option value="agencies">Agencies</option>
-              <option value="salons">Salons</option>
-              <option value="gyms">Gyms</option>
-              <option value="dentists">Dentists</option>
-              <option value="real-estate">Real Estate</option>
-              <option value="interior-designers">Interior Designers</option>
-              <option value="architects">Architects</option>
-              <option value="wedding-planners">Wedding Planners</option>
-              <option value="furniture">Furniture</option>
-            </select>
-            <input
-              type="number"
-              placeholder="Limit"
-              value={pipelineLimit}
-              onChange={(e) => setPipelineLimit(e.target.value)}
-              className="px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-primary)] transition-all"
-            />
+            <div className="relative">
+              <Building2 className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-muted)] pointer-events-none" />
+              <select
+                value={pipelineCategory}
+                onChange={(e) => setPipelineCategory(e.target.value)}
+                className="w-full pl-12 pr-4 py-3.5 premium-input text-sm font-medium appearance-none cursor-pointer"
+              >
+                <option value="restaurants">Restaurants</option>
+                <option value="clinics">Clinics</option>
+                <option value="agencies">Agencies</option>
+                <option value="salons">Salons</option>
+                <option value="gyms">Gyms</option>
+                <option value="dentists">Dentists</option>
+                <option value="real-estate">Real Estate</option>
+                <option value="interior-designers">Interior Designers</option>
+                <option value="architects">Architects</option>
+                <option value="wedding-planners">Wedding Planners</option>
+                <option value="furniture">Furniture</option>
+              </select>
+              <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)] pointer-events-none" />
+            </div>
+            <div className="relative">
+              <Users className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-muted)] pointer-events-none" />
+              <input
+                type="number"
+                placeholder="Max"
+                value={pipelineLimit}
+                onChange={(e) => setPipelineLimit(e.target.value)}
+                className="w-full pl-12 pr-4 py-3.5 premium-input text-sm font-medium"
+              />
+            </div>
             <button
               onClick={handleRunPipeline}
               disabled={runningPipeline || !pipelineLocation}
-              className="btn-primary px-6 py-3 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn-primary w-full py-3.5 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm shadow-lg border border-white/10"
             >
               {runningPipeline ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Running...
+                  <span>
+                    {pipelineStatus || 'Running...'}
+                    {pipelineElapsed > 0 && ` (${pipelineElapsed}s)`}
+                  </span>
                 </>
               ) : (
                 <>
-                  <Play className="w-4 h-4" />
-                  Start Pipeline
+                  <Play className="w-4 h-4 fill-current" />
+                  Deploy Agent
                 </>
               )}
             </button>
           </div>
 
           {/* Suggestion chips */}
-          <div className="mb-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Sparkles className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
-              <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Quick leads — click to fill</span>
+          <div className="mt-6 pt-6 border-t border-[var(--border-color)]">
+            <div className="flex items-center gap-2 mb-4">
+              <Zap className="w-4 h-4 text-[var(--accent-primary)] fill-[var(--accent-primary)]/20" />
+              <span className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider">Quick Suggestions</span>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2.5">
               {pipelineSuggestions.map((s, i) => (
                 <button
                   key={`${s.location}-${s.category}-${i}`}
@@ -385,45 +460,45 @@ export default function Dashboard() {
                     setPipelineCategory(s.category);
                     fetchSuggestions(s.location);
                   }}
-                  className={`group relative px-3.5 py-2 rounded-xl text-xs font-medium transition-all border ${
+                  className={`group px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border flex items-center gap-1.5 ${
                     s.priority === 'high'
-                      ? 'border-teal-500/30 bg-teal-500/5 text-teal-400 hover:bg-teal-500/10 hover:border-teal-500/50'
+                      ? 'border-red-500/20 bg-red-500/5 text-red-500 hover:bg-red-500/10'
                       : s.priority === 'medium'
-                      ? 'border-amber-500/30 bg-amber-500/5 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/50'
-                      : 'border-slate-500/30 bg-slate-500/5 text-slate-400 hover:bg-slate-500/10 hover:border-slate-500/50'
+                      ? 'border-amber-500/20 bg-amber-500/5 text-amber-500 hover:bg-amber-500/10'
+                      : 'border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:bg-[var(--bg-primary)]'
                   }`}
                   title={s.desc}
                 >
-                  <span className="font-semibold">{s.label}</span>
-                  <span className="mx-1 opacity-50">·</span>
-                  <span className="opacity-70">{s.location}</span>
-                  {/* Tooltip on hover */}
-                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-1 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)] text-[10px] text-[var(--text-secondary)] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
-                    {s.desc}
-                  </div>
+                  <span className="tracking-wide">{s.label}</span>
+                  <span className="w-1 h-1 rounded-full bg-current opacity-40"></span>
+                  <span className="opacity-80">{s.location}</span>
                 </button>
               ))}
             </div>
           </div>
 
           {pipelineResult && (
-            <div className="mt-4 p-4 rounded-xl bg-[var(--accent-subtle)] border border-[var(--accent-primary)]/20">
-              <div className="flex items-center gap-2 text-[var(--accent-primary)]">
-                <Sparkles className="w-4 h-4" />
-                <span className="font-medium">Pipeline completed!</span>
+            <div className="mt-6 p-5 rounded-xl bg-[var(--accent-subtle)] border border-[var(--accent-primary)]/30 shadow-inner flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3 text-[var(--accent-primary)]">
+                <div className="w-10 h-10 rounded-full bg-[var(--accent-primary)]/20 flex items-center justify-center">
+                  <Check className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="block font-bold text-sm">Mission Accomplished</span>
+                  <span className="text-xs opacity-80 font-medium">Agent research sequence complete</span>
+                </div>
               </div>
-              <div className="grid grid-cols-4 gap-4 mt-3 text-sm">
-                <div><span className="text-[var(--text-muted)]">Found:</span> <span className="font-semibold">{pipelineResult.businesses_found}</span></div>
-                <div><span className="text-[var(--text-muted)]">Analyzed:</span> <span className="font-semibold">{pipelineResult.websites_analyzed}</span></div>
-                <div><span className="text-[var(--text-muted)]">Leads:</span> <span className="font-semibold">{pipelineResult.leads_generated}</span></div>
-                <div><span className="text-[var(--text-muted)]">Errors:</span> <span className="font-semibold">{pipelineResult.errors?.length || 0}</span></div>
+              <div className="flex gap-6 text-sm">
+                <div className="flex flex-col"><span className="text-[var(--text-muted)] text-xs uppercase tracking-wider font-semibold">Discovered</span> <span className="font-bold text-lg text-[var(--text-primary)]">{pipelineResult.businesses_found}</span></div>
+                <div className="flex flex-col"><span className="text-[var(--text-muted)] text-xs uppercase tracking-wider font-semibold">Analyzed</span> <span className="font-bold text-lg text-[var(--text-primary)]">{pipelineResult.websites_analyzed}</span></div>
+                <div className="flex flex-col"><span className="text-[var(--text-muted)] text-xs uppercase tracking-wider font-semibold">Leads</span> <span className="font-bold text-lg text-[var(--accent-primary)]">{pipelineResult.leads_generated}</span></div>
               </div>
             </div>
           )}
-        </div>
+        </section>
 
         {/* Filters */}
-        <div className="glass-card p-4 mb-8 animate-slide-up" style={{ animationDelay: '250ms' }}>
+        <div className="surface-card p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Filter className="w-4 h-4 text-[var(--text-muted)]" />
@@ -532,11 +607,11 @@ export default function Dashboard() {
             <div className="w-10 h-10 spinner" />
           </div>
         ) : leads.length === 0 ? (
-          <div className="glass-card p-12 text-center animate-fade-in">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--accent-subtle)] flex items-center justify-center">
-              <Target className="w-8 h-8 text-[var(--accent-primary)]" />
+          <div className="surface-card p-12 text-center">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-color)] flex items-center justify-center">
+              <Target className="w-8 h-8 text-[var(--text-muted)]" />
             </div>
-            <h3 className="text-xl font-semibold mb-2">No leads yet</h3>
+            <h3 className="text-lg font-semibold mb-2">No leads yet</h3>
             <p className="text-[var(--text-muted)] mb-6">Run a pipeline to discover businesses</p>
             <button
               onClick={() => handleRunPipeline()}
@@ -552,8 +627,7 @@ export default function Dashboard() {
             {sortedLeads.map((lead, index) => (
               <div
                 key={lead.id}
-                className="glass-card p-5 card-shine animate-slide-up hover:scale-[1.02] transition-all cursor-pointer"
-                style={{ animationDelay: `${index * 30}ms` }}
+                className="surface-card p-5 cursor-pointer hover:border-[var(--accent-primary)] transition-colors"
                 onClick={() => setExpandedCard(expandedCard === lead.id ? null : lead.id)}
               >
                 <div className="flex items-start justify-between mb-4">
@@ -637,7 +711,25 @@ export default function Dashboard() {
 
                 {/* Expanded content */}
                 {expandedCard === lead.id && (
-                  <div className="mt-4 pt-4 border-t border-[var(--border-color)] animate-fade-in">
+                  <div className="mt-4 pt-4 border-t border-[var(--border-color)]">
+                    <div className="flex justify-end gap-2 mb-4">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleEnrich(lead.id); }}
+                        disabled={enriching === lead.id}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-color)] hover:border-[var(--accent-primary)] transition-all flex items-center gap-1.5"
+                      >
+                        {enriching === lead.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        Enrich Lead
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleWhatsapp(lead.id); }}
+                        disabled={sendingWa === lead.id || !lead.outreach_message || !(lead.businesses?.phone || lead.business?.phone)}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 hover:bg-emerald-500/20 hover:scale-[1.02] transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:hover:scale-100"
+                      >
+                        {sendingWa === lead.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+                        Send WhatsApp
+                      </button>
+                    </div>
                     {lead.outreach_message && (
                       <div className="mb-3">
                         <div className="flex items-center justify-between mb-2">
@@ -667,7 +759,7 @@ export default function Dashboard() {
             ))}
           </div>
         ) : (
-          <div className="glass-card overflow-hidden">
+          <div className="surface-card overflow-hidden">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border-color)]">
