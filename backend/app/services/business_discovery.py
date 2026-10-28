@@ -25,22 +25,26 @@ class BusinessDiscoveryService:
     async def _fetch_apify_businesses(
         self, location: str, category: str, limit: int
     ) -> list[dict]:
-        url = "https://api.apify.com/v2/acts/apify~google-maps-scraper/run-sync-get-dataset-items"
+        url = "https://api.apify.com/v2/acts/johnvc~google-maps-places-api/run-sync-get-dataset-items"
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
-                json={"location": location, "keyword": category, "maxResults": limit},
+                json={
+                    "searchTerms": [category],
+                    "location": location,
+                    "maxResultsPerSearch": max(limit, 20),
+                },
                 headers={
                     "Authorization": f"Bearer {self.apify_key}",
                     "Content-Type": "application/json",
                 },
-                timeout=60
+                timeout=300
             )
 
-            if response.status_code == 200:
+            if response.status_code in (200, 201):
                 data = response.json()
-                return self._normalize_apify_data(data)
+                return self._normalize_apify_data(data, location)[:limit]
             else:
                 raise Exception(f"Apify API error: {response.status_code} - {response.text}")
 
@@ -65,20 +69,22 @@ class BusinessDiscoveryService:
             else:
                 raise Exception(f"SerpAPI error: {response.status_code} - {response.text}")
 
-    def _normalize_apify_data(self, data: list) -> list[dict]:
+    def _normalize_apify_data(self, data: list, location: str = "") -> list[dict]:
         normalized = []
         for item in data:
+            if item.get("error_message"):
+                continue
             normalized.append(
                 {
                     "name": item.get("title", ""),
                     "website": item.get("website", None),
-                    "phone": item.get("phone", None),
-                    "email": item.get("email", None),
+                    "phone": item.get("phoneNumber", None),
+                    "email": None,
                     "category": item.get("type", ""),
-                    "location": item.get("city", ""),
+                    "location": location,
                     "address": item.get("address", None),
                     "rating": item.get("rating", None),
-                    "reviews_count": item.get("reviewsCount", None),
+                    "reviews_count": item.get("ratingCount", None),
                     "source": "apify",
                 }
             )
